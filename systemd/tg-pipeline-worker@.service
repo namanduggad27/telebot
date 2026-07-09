@@ -1,0 +1,19 @@
+[Unit]
+Description=Telegram Media Pipeline - ARQ I/O & Metadata Worker Instance %i
+After=network.target redis.service postgresql.service tg-pipeline-bot.service
+Wants=redis.service postgresql.service
+
+[Service]
+Type=simple
+User=pipeline
+Group=pipeline
+WorkingDirectory=/opt/telegram_media_pipeline
+EnvironmentFile=/opt/telegram_media_pipeline/.env
+# Runs multi-threaded/async ARQ background jobs (`enrich_metadata_task`, `process_media_io_task`, `batch_link_and_post_task`)
+ExecStart=/opt/telegram_media_pipeline/.venv/bin/arq src.workers.arq_worker.WorkerSettings
+Restart=always
+RestartSec=5s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

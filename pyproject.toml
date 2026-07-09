@@ -1,0 +1,38 @@
+[project]
+name = "telegram-media-pipeline"
+version = "0.1.0"
+description = "Automated Telegram media processing pipeline (Userbot scraper, TMDB enrichment, HITL state machine, and batch linking)"
+readme = "README.md"
+requires-python = ">=3.10, <3.13"
+dependencies = [
+    "hydrogram>=0.2.0",
+    "tgcrypto>=1.2.5",
+    "aiogram>=3.10.0",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.3.0",
+    "sqlalchemy[asyncio]>=2.0.31",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.2",
+    "redis>=5.0.7",
+    "arq>=0.26.0",
+    "httpx>=0.27.0",
+    "tenacity>=8.5.0",
+    "aiofiles>=24.1.0",
+    "pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.2",
+    "pytest-asyncio>=0.23.7",
+    "black>=24.4.2",
+    "ruff>=0.5.1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

@@ -1,0 +1,18 @@
+[Unit]
+Description=Telegram Media Pipeline - Raw Scraper & HITL Admin Control Service
+After=network.target redis.service postgresql.service
+Wants=redis.service postgresql.service
+
+[Service]
+Type=simple
+User=pipeline
+Group=pipeline
+WorkingDirectory=/opt/telegram_media_pipeline
+EnvironmentFile=/opt/telegram_media_pipeline/.env
+ExecStart=/opt/telegram_media_pipeline/.venv/bin/python -m src.scrapers.userbot_listener
+Restart=always
+RestartSec=5s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
