@@ -8,8 +8,11 @@ from src.db.models import MediaItem
 
 logger = logging.getLogger("bot.admin_bot")
 
+from src.bot.handlers import router as bot_router
+
 bot: Optional[Bot] = None
 dp = Dispatcher()
+dp.include_router(bot_router)
 
 
 def get_bot() -> Optional[Bot]:
@@ -21,6 +24,14 @@ def get_bot() -> Optional[Bot]:
     if bot is None:
         bot = Bot(token=settings.ADMIN_BOT_TOKEN)
     return bot
+
+
+async def start_admin_bot() -> None:
+    """Start polling for Admin Bot interactive review card callbacks and deep links."""
+    bot_instance = get_bot()
+    if bot_instance:
+        logger.info("Starting Aiogram Admin Bot polling (`Approve`/`Edit`/`Reject` handlers active)...")
+        await dp.start_polling(bot_instance)
 
 
 def build_confirmation_keyboard(item_id: str) -> InlineKeyboardMarkup:

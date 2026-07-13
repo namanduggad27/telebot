@@ -10,19 +10,20 @@ from src.db.models import MediaItem, PipelineStatus
 from src.db.session import get_db_session
 from src.services.state_machine import StateMachine
 from src.services.links_bot_client import LinksBotClient
+from src.services.native_batch_engine import NativeBatchEngine
 from src.services.presentation import generate_presentation_post
 
 logger = logging.getLogger("workers.presentation_worker")
 
 
 async def batch_link_and_post_task(ctx: Dict[str, Any], item_id: str) -> bool:
-    """ARQ background task for Phase 4: get batch link URL from Links Bot and post stylized presentation to Main Channel."""
+    """ARQ background task for Phase 4: get shareable deep-link URL and post stylized presentation to Main Channel."""
     logger.info(f"Starting Phase 4 presentation task for item ID={item_id}")
 
     # 1. Fetch item from database
     item = None
     async for db in get_db_session():
-        stmt = select(MediaItem).where(MediaItem.id == item_id)
+        stmt = select(MediaItem).where(MediaItem.id == int(item_id))
         result = await db.execute(stmt)
         item = result.scalar_one_or_none()
         break
@@ -40,29 +41,34 @@ async def batch_link_and_post_task(ctx: Dict[str, Any], item_id: str) -> bool:
     # 2. Transition to BATCH_LINKING
     await StateMachine.transition_item(item_id, PipelineStatus.BATCH_LINKING)
 
-    # 3. Connect Userbot client to interact with external Links Bot
-    batch_url = f"https://t.me/c/{str(settings.SHADOW_CHANNEL_ID).replace('-100', '')}/{item.shadow_message_id}"
-    client = None
-    if settings.TG_API_ID and settings.TG_API_HASH and item.shadow_message_id:
-        client = Client(
-            name=f"{settings.TG_USERBOT_SESSION}_links",
-            api_id=settings.TG_API_ID,
-            api_hash=settings.TG_API_HASH,
-            workdir=str(settings.BASE_DIR),
-        )
-        try:
-            await client.start()
-            logger.info("Connecting to Links Bot to obtain shareable batch URL...")
-            url = await LinksBotClient.get_batch_link(
-                client, item.shadow_message_id, settings.SHADOW_CHANNEL_ID or item.raw_channel_id
+    # 3. Generate shareable deep-link URL using our self-contained native bot (or external links bot if configured)
+    if settings.LINKS_BOT_USERNAME and settings.LINKS_BOT_USERNAME != "@YourLinksBot":
+        logger.info(f"External LINKS_BOT_USERNAME={settings.LINKS_BOT_USERNAME} configured. Querying via Userbot...")
+        batch_url = f"https://t.me/c/{str(settings.SHADOW_CHANNEL_ID).replace('-100', '')}/{item.shadow_message_id}"
+        client = None
+        if settings.TG_API_ID and settings.TG_API_HASH and item.shadow_message_id:
+            client = Client(
+                name=f"{settings.TG_USERBOT_SESSION}_links",
+                api_id=settings.TG_API_ID,
+                api_hash=settings.TG_API_HASH,
+                workdir=str(settings.BASE_DIR),
             )
-            if url:
-                batch_url = url
-        except Exception as e:
-            logger.error(f"Error obtaining batch link via Userbot: {e}")
-        finally:
-            if client and client.is_connected:
-                await client.stop()
+            try:
+                await client.start()
+                url = await LinksBotClient.get_batch_link(
+                    client, item.shadow_message_id, settings.SHADOW_CHANNEL_ID or item.raw_channel_id
+                )
+                if url:
+                    batch_url = url
+            except Exception as e:
+                logger.error(f"Error obtaining external batch link via Userbot: {e}")
+            finally:
+                if client and client.is_connected:
+                    await client.stop()
+    else:
+        # Use our Native Batch Engine (100% free, no external bot required!)
+        logger.info("Using NativeBatchEngine to generate self-contained deep-link parameter URL...")
+        batch_url = await NativeBatchEngine.generate_shareable_url(item)
 
     # 4. Fetch cached TMDB state
     cached_state = await StateMachine.get_cached_state(item_id)
@@ -107,7 +113,7 @@ async def batch_link_and_post_task(ctx: Dict[str, Any], item_id: str) -> bool:
 
     # 7. Persist main message ID and batch link to PostgreSQL and transition to PUBLISHED
     async for db in get_db_session():
-        stmt = select(MediaItem).where(MediaItem.id == item_id)
+        stmt = select(MediaItem).where(MediaItem.id == int(item_id))
         res = await db.execute(stmt)
         db_item = res.scalar_one_or_none()
         if db_item:

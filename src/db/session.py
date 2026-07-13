@@ -1,4 +1,5 @@
 from typing import AsyncGenerator
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from config.settings import settings
 from src.db.models import Base
@@ -28,6 +29,8 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
+        except GeneratorExit:
+            await session.commit()
         except Exception:
             await session.rollback()
             raise
@@ -39,3 +42,10 @@ async def init_db() -> None:
     """Helper to initialize database tables (useful for development/testing when Alembic is not run)."""
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        try:
+            await conn.execute(text("ALTER TABLE media_items DROP CONSTRAINT IF EXISTS media_items_file_unique_id_key;"))
+            await conn.execute(text("ALTER TABLE media_items DROP CONSTRAINT IF EXISTS uq_tmdb_season_episode_quality;"))
+            await conn.execute(text("ALTER TABLE media_items ADD COLUMN IF NOT EXISTS custom_thumbnail_path VARCHAR(512);"))
+        except Exception as e:
+            # Ignore errors if using SQLite in tests or if table/constraint does not exist
+            pass

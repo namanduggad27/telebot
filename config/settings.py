@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     MAIN_CHANNEL_ID: int = Field(
         default=0, description="ID of the Main Channel for presentation posts"
     )
+
+    @field_validator("RAW_CHANNEL_ID", "SHADOW_CHANNEL_ID", "MAIN_CHANNEL_ID", mode="before")
+    @classmethod
+    def normalize_channel_ids(cls, v: int | str) -> int:
+        """Automatically prefix -100 to positive channel ID integers if omitted."""
+        if not v or int(v) == 0:
+            return 0
+        v_int = int(v)
+        if v_int > 0:
+            return int(f"-100{v_int}")
+        return v_int
 
     # Admin Control Bot & HITL
     ADMIN_BOT_TOKEN: str = Field(default="", description="Bot token for Control Bot")

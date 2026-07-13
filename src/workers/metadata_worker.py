@@ -18,7 +18,7 @@ async def enrich_metadata_task(ctx: Dict[str, Any], item_id: str) -> bool:
     # 1. Fetch item from database
     item = None
     async for db in get_db_session():
-        stmt = select(MediaItem).where(MediaItem.id == item_id)
+        stmt = select(MediaItem).where(MediaItem.id == int(item_id))
         result = await db.execute(stmt)
         item = result.scalar_one_or_none()
         break
@@ -70,14 +70,5 @@ async def enrich_metadata_task(ctx: Dict[str, Any], item_id: str) -> bool:
         logger.error(f"Failed to transition ID={item_id} to ENRICHED.")
         return False
 
-    # 4. Send Confirmation Card to Admin Bot and transition to PENDING_CONFIRMATION
-    msg_id = await send_confirmation_card(item, tmdb_info=tmdb_info)
-    if msg_id:
-        await StateMachine.transition_item(item_id=item_id, target_status=PipelineStatus.CONFIRMED if not msg_id else PipelineStatus.ENRICHED)
-        logger.info(f"Metadata enrichment & notification complete for ID={item_id}")
-        return True
-    else:
-        logger.warning(
-            f"Could not send notification card for ID={item_id}. Remaining in ENRICHED state."
-        )
-        return True
+    logger.info(f"Metadata enrichment complete for ID={item_id}. Item stored in ENRICHED state for batch/grouped processing.")
+    return True

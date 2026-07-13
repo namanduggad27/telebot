@@ -8,7 +8,7 @@ from src.workers.metadata_worker import enrich_metadata_task
 from src.workers.io_worker import process_media_io_task
 from src.workers.presentation_worker import batch_link_and_post_task
 from src.services.state_machine import StateMachine
-from src.db.session import async_engine
+from src.db.session import async_engine, init_db
 
 logger = logging.getLogger("workers.arq_worker")
 
@@ -18,6 +18,7 @@ async def startup(ctx: dict) -> None:
     configure_logging()
     settings.ensure_directories()
     logger.info("ARQ Worker initializing pool and database connections...")
+    await init_db()
 
 
 async def shutdown(ctx: dict) -> None:

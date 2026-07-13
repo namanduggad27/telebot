@@ -7,12 +7,14 @@ import httpx
 from PIL import Image
 from hydrogram import Client
 from hydrogram.errors import FloodWait
+from hydrogram.enums import ParseMode
 from sqlalchemy import select
 
 from config.settings import settings
 from src.db.models import MediaItem, PipelineStatus
 from src.db.session import get_db_session
 from src.services.state_machine import StateMachine
+from src.services.progress_tracker import ProgressTracker
 
 logger = logging.getLogger("services.file_io_engine")
 
@@ -74,7 +76,7 @@ class FileIOEngine:
             # 1. Fetch item from DB
             item = None
             async for db in get_db_session():
-                stmt = select(MediaItem).where(MediaItem.id == item_id)
+                stmt = select(MediaItem).where(MediaItem.id == int(item_id))
                 result = await db.execute(stmt)
                 item = result.scalar_one_or_none()
                 break
@@ -98,14 +100,30 @@ class FileIOEngine:
             scratch_path = settings.SCRATCH_DIR / f"{item.id}_{clean_name}"
             
             cached_state = await StateMachine.get_cached_state(item_id)
-            poster_url = cached_state.get("tmdb_poster_url") if cached_state else None
-            thumb_path = await cls.download_and_prepare_thumbnail(poster_url, item_id) if poster_url else None
+            custom_thumb = item.custom_thumbnail_path or (cached_state.get("custom_thumbnail_path") if cached_state else None)
+            if custom_thumb and Path(custom_thumb).exists():
+                thumb_path = Path(custom_thumb)
+                logger.info(f"Using custom thumbnail for ID={item_id}: {thumb_path}")
+            else:
+                poster_url = cached_state.get("tmdb_poster_url") if cached_state else None
+                thumb_path = await cls.download_and_prepare_thumbnail(poster_url, item_id) if poster_url else None
 
             # 4. Initialize MTProto client session
             if not settings.TG_API_ID or not settings.TG_API_HASH:
                 logger.error("TG_API_ID or TG_API_HASH missing in settings. Cannot run MTProto I/O transfer.")
                 await StateMachine.transition_item(item_id, PipelineStatus.FAILED)
                 return False
+
+            # Automatically sync main session auth key to IO session so the background worker never prompts for phone login
+            main_sess = settings.BASE_DIR / f"{settings.TG_USERBOT_SESSION}.session"
+            io_sess = settings.BASE_DIR / f"{settings.TG_USERBOT_SESSION}_io.session"
+            if main_sess.exists() and (not io_sess.exists() or io_sess.stat().st_size < 1000):
+                try:
+                    import shutil
+                    shutil.copy2(main_sess, io_sess)
+                    logger.info("Synchronized auth key from main session to IO session.")
+                except Exception as sync_err:
+                    logger.debug(f"Could not copy session file: {sync_err}")
 
             client = Client(
                 name=f"{settings.TG_USERBOT_SESSION}_io",
@@ -126,12 +144,14 @@ class FileIOEngine:
                     await StateMachine.transition_item(item_id, PipelineStatus.FAILED)
                     return False
 
-                # 5. Download media chunk-by-chunk to local scratch file
+                # 5. Download media chunk-by-chunk to local scratch file with real-time progress bar
                 logger.info(f"Downloading raw media ID={item_id} ({round(item.file_size_bytes/(1024*1024), 2)} MB) to {scratch_path}...")
+                download_tracker = ProgressTracker("DOWNLOAD", str(item_id), clean_name)
                 downloaded_file = await cls._safe_mtproto_action(
                     client.download_media,
                     media_obj,
                     file_name=str(scratch_path),
+                    progress=download_tracker.on_progress,
                 )
                 if not downloaded_file or not Path(downloaded_file).exists():
                     logger.error(f"Download failed for ID={item_id}: file not created at {scratch_path}")
@@ -141,10 +161,12 @@ class FileIOEngine:
                 logger.info(f"Download complete for ID={item_id}. Transitioning to UPLOADING_SHADOW...")
                 await StateMachine.transition_item(item_id, PipelineStatus.UPLOADING_SHADOW)
 
-                # 6. Upload renamed file + thumbnail to Shadow Database Channel
+                # 6. Upload renamed file + thumbnail to Shadow Database Channel with real-time progress bar
+                season_str = f"S{item.season_num:02d}" if item.season_num is not None else "N/A"
+                episode_str = f"E{item.episode_num:02d}" if item.episode_num is not None else "N/A"
                 caption = (
-                    f"🎬 **{item.parsed_title}**\n"
-                    f"📺 **S{item.season_num:02d}E{item.episode_num:02d}** | `{item.quality_tag or 'HD'}`\n"
+                    f"🎬 **{item.parsed_title or 'Unknown Title'}**\n"
+                    f"📺 **{season_str} / {episode_str}** | `{item.quality_tag or 'HD'}`\n"
                     f"📂 `{clean_name}`\n"
                     f"🆔 `{item.file_unique_id}`"
                 )
@@ -154,16 +176,16 @@ class FileIOEngine:
                     logger.warning("SHADOW_CHANNEL_ID not set! Using RAW_CHANNEL_ID as fallback destination for testing.")
                 dest_channel = settings.SHADOW_CHANNEL_ID or item.raw_channel_id
 
+                upload_tracker = ProgressTracker("UPLOAD", str(item_id), clean_name, telegram_message_id=download_tracker.telegram_message_id)
                 sent_msg = await cls._safe_mtproto_action(
-                    client.send_video if scratch_path.suffix.lower() in (".mkv", ".mp4", ".mov") else client.send_document,
+                    client.send_document,
                     chat_id=dest_channel,
-                    video=str(scratch_path) if scratch_path.suffix.lower() in (".mkv", ".mp4", ".mov") else None,
-                    document=str(scratch_path) if scratch_path.suffix.lower() not in (".mkv", ".mp4", ".mov") else str(scratch_path),
+                    document=str(scratch_path),
                     caption=caption,
-                    parse_mode="Markdown",
+                    parse_mode=ParseMode.MARKDOWN,
                     file_name=clean_name,
                     thumb=str(thumb_path) if thumb_path and thumb_path.exists() else None,
-                    supports_streaming=True if scratch_path.suffix.lower() in (".mkv", ".mp4") else False,
+                    progress=upload_tracker.on_progress,
                 )
 
                 if not sent_msg:
@@ -178,7 +200,7 @@ class FileIOEngine:
 
                 # 7. Update PostgreSQL record with shadow destination IDs
                 async for db in get_db_session():
-                    stmt = select(MediaItem).where(MediaItem.id == item_id)
+                    stmt = select(MediaItem).where(MediaItem.id == int(item_id))
                     res = await db.execute(stmt)
                     db_item = res.scalar_one_or_none()
                     if db_item:

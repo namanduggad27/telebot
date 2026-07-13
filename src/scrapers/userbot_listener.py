@@ -6,7 +6,7 @@ from hydrogram.types import Message
 
 from config.settings import settings
 from config.logging_config import configure_logging
-from src.db.session import async_engine, get_db_session
+from src.db.session import async_engine, get_db_session, init_db
 from src.db.models import MediaItem, PipelineStatus
 from src.scrapers.regex_engine import RegexEngine
 
@@ -84,6 +84,7 @@ class RawChannelListener:
                     db.add(item)
                     await db.flush()
                     await db.refresh(item)
+                    await db.commit()
                     logger.info(
                         f"Inserted MediaItem ID={item.id} (status={item.status.value}) for unique_id='{file_unique_id}'"
                     )
@@ -113,6 +114,8 @@ class RawChannelListener:
         """Start the async Userbot listener service."""
         configure_logging()
         settings.ensure_directories()
+        logger.info("Initializing database tables...")
+        await init_db()
         logger.info("Starting Raw Channel Userbot Listener...")
         if not self.client:
             self.create_client()
@@ -129,11 +132,15 @@ class RawChannelListener:
         logger.info("Userbot and DB engine shut down cleanly.")
 
 
+from src.bot.admin_bot import start_admin_bot
+
+
 async def main() -> None:
-    """Entry point for running the userbot listener standalone."""
+    """Entry point for running the userbot listener and Admin Bot polling standalone."""
     listener = RawChannelListener()
     try:
         await listener.start()
+        bot_task = asyncio.create_task(start_admin_bot())
         await asyncio.Event().wait()  # Keep running indefinitely
     except (KeyboardInterrupt, SystemExit):
         pass

@@ -17,7 +17,8 @@ VALID_TRANSITIONS: Dict[PipelineStatus, Set[PipelineStatus]] = {
     PipelineStatus.SCRAPED: {PipelineStatus.ENRICHED, PipelineStatus.FAILED, PipelineStatus.REJECTED},
     PipelineStatus.ENRICHED: {PipelineStatus.CONFIRMED, PipelineStatus.REJECTED, PipelineStatus.FAILED},
     PipelineStatus.CONFIRMED: {PipelineStatus.DOWNLOADING, PipelineStatus.FAILED, PipelineStatus.REJECTED},
-    PipelineStatus.DOWNLOADING: {PipelineStatus.SHADOW_UPLOADED, PipelineStatus.FAILED},
+    PipelineStatus.DOWNLOADING: {PipelineStatus.UPLOADING_SHADOW, PipelineStatus.SHADOW_UPLOADED, PipelineStatus.FAILED},
+    PipelineStatus.UPLOADING_SHADOW: {PipelineStatus.SHADOW_UPLOADED, PipelineStatus.FAILED},
     PipelineStatus.SHADOW_UPLOADED: {PipelineStatus.BATCH_LINKED, PipelineStatus.FINAL_POSTED, PipelineStatus.FAILED},
     PipelineStatus.BATCH_LINKED: {PipelineStatus.FINAL_POSTED, PipelineStatus.FAILED},
     PipelineStatus.FINAL_POSTED: set(),  # Terminal success state
@@ -70,7 +71,7 @@ class StateMachine:
 
         async for db in get_db_session():
             # 1. Fetch current item from DB to verify current state
-            stmt = select(MediaItem).where(MediaItem.id == item_id)
+            stmt = select(MediaItem).where(MediaItem.id == int(item_id))
             result = await db.execute(stmt)
             item = result.scalar_one_or_none()
 
@@ -140,7 +141,7 @@ class StateMachine:
 
         # Fallback to DB query
         async for db in get_db_session():
-            stmt = select(MediaItem).where(MediaItem.id == item_id)
+            stmt = select(MediaItem).where(MediaItem.id == int(item_id))
             result = await db.execute(stmt)
             item = result.scalar_one_or_none()
             if item:
