@@ -8,6 +8,7 @@ from sqlalchemy import (
     Enum,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     func,
@@ -58,7 +59,7 @@ class MediaItem(Base):
 
     # Extracted & Verified Metadata
     parsed_title: Mapped[str] = mapped_column(String(255), nullable=False)
-    tmdb_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    omdb_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
     season_num: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     episode_num: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     quality_tag: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
@@ -85,7 +86,7 @@ class MediaItem(Base):
     )
 
     __table_args__ = (
-        Index("idx_media_status_tmdb", "status", "tmdb_id"),
+        Index("idx_media_status_omdb", "status", "omdb_id"),
     )
 
     def __repr__(self) -> str:
@@ -93,3 +94,14 @@ class MediaItem(Base):
             f"<MediaItem(id={self.id}, unique_id='{self.file_unique_id}', "
             f"clean_name='{self.clean_file_name}', status={self.status.value})>"
         )
+
+class BatchLink(Base):
+    """Stores arbitrary batch links mapped to a list of media item IDs."""
+    
+    __tablename__ = "batch_links"
+    
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    item_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

@@ -5,7 +5,7 @@ from arq.worker import Worker
 from config.settings import settings
 from config.logging_config import configure_logging
 from src.workers.metadata_worker import enrich_metadata_task
-from src.workers.io_worker import process_media_io_task
+from src.workers.io_worker import process_media_io_task, process_batch_io_task
 from src.workers.presentation_worker import batch_link_and_post_task
 from src.services.state_machine import StateMachine
 from src.db.session import async_engine, init_db
@@ -33,6 +33,7 @@ class WorkerSettings:
     functions = [
         enrich_metadata_task,
         process_media_io_task,
+        process_batch_io_task,
         batch_link_and_post_task,
     ]
     redis_settings = RedisSettings.from_dsn(settings.REDIS_URL)

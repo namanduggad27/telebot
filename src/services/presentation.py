@@ -29,7 +29,7 @@ def stylize_title(title: str) -> str:
 
 def generate_presentation_post(
     item: MediaItem,
-    tmdb_info: Optional[Dict[str, Any]],
+    omdb_info: Optional[Dict[str, Any]],
     batch_link_url: str,
 ) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate a rich, anti-crawler presentation caption and glowing inline action buttons for the Main Channel."""
@@ -46,10 +46,10 @@ def generate_presentation_post(
     else:
         se_badge = "FULL FEATURE RELEASE"
 
-    rating = tmdb_info.get("vote_average", 0.0) if tmdb_info else 0.0
-    release_date = tmdb_info.get("release_date", "") if tmdb_info else ""
+    rating = omdb_info.get("vote_average", 0.0) if omdb_info else 0.0
+    release_date = omdb_info.get("release_date", "") if omdb_info else ""
     year_str = release_date[:4] if release_date and len(release_date) >= 4 else "2024"
-    overview = tmdb_info.get("overview", "") if tmdb_info else ""
+    overview = omdb_info.get("overview", "") if omdb_info else ""
     if len(overview) > 400:
         overview = overview[:397] + "..."
 
@@ -62,7 +62,7 @@ def generate_presentation_post(
         f"🎬 **{styled_title}** ({year_str})\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"💫 **Format:** `{se_badge}`\n"
-        f"⭐ **TMDB Rating:** `{rating} / 10`\n"
+        f"⭐ **OMDB Rating:** `{rating} / 10`\n"
         f"⚡ **Quality:** `{quality_str} ({codec_str})`\n"
         f"💾 **Size:** `{size_str}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -71,8 +71,8 @@ def generate_presentation_post(
         f"👇 _Click below to stream or download instantly inside Telegram!_"
     )
 
-    tmdb_id = item.tmdb_id
-    tmdb_url = f"https://www.themoviedb.org/tv/{tmdb_id}" if tmdb_id else "https://www.themoviedb.org/"
+    omdb_id = item.omdb_id
+    omdb_url = f"https://www.imdb.com/title/{omdb_id}/" if omdb_id else "https://www.imdb.com/"
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -80,7 +80,7 @@ def generate_presentation_post(
                 InlineKeyboardButton(text="⚡ STREAM / DOWNLOAD NOW ⚡", url=batch_link_url),
             ],
             [
-                InlineKeyboardButton(text="🎬 TMDB Page", url=tmdb_url),
+                InlineKeyboardButton(text="🎬 OMDB Page", url=omdb_url),
                 InlineKeyboardButton(text="🔔 Join Main Channel", url="https://t.me/telegram"),
             ],
         ]

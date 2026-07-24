@@ -109,12 +109,12 @@ class StateMachine:
                     "season_num": str(item.season_num) if item.season_num is not None else "",
                     "episode_num": str(item.episode_num) if item.episode_num is not None else "",
                     "quality_tag": item.quality_tag or "",
-                    "tmdb_id": str(item.tmdb_id) if item.tmdb_id is not None else "",
+                    "omdb_id": str(item.omdb_id) if item.omdb_id is not None else "",
                 }
-                if extra_metadata and "tmdb_poster_url" in extra_metadata:
-                    cache_payload["tmdb_poster_url"] = str(extra_metadata["tmdb_poster_url"])
-                if extra_metadata and "tmdb_overview" in extra_metadata:
-                    cache_payload["tmdb_overview"] = str(extra_metadata["tmdb_overview"])
+                if extra_metadata and "omdb_poster_url" in extra_metadata:
+                    cache_payload["omdb_poster_url"] = str(extra_metadata["omdb_poster_url"])
+                if extra_metadata and "omdb_overview" in extra_metadata:
+                    cache_payload["omdb_overview"] = str(extra_metadata["omdb_overview"])
 
                 await redis.hset(redis_key, mapping=cache_payload)
                 await redis.expire(redis_key, settings.STATE_TTL_SECONDS)
@@ -154,6 +154,6 @@ class StateMachine:
                     "season_num": str(item.season_num) if item.season_num is not None else "",
                     "episode_num": str(item.episode_num) if item.episode_num is not None else "",
                     "quality_tag": item.quality_tag or "",
-                    "tmdb_id": str(item.tmdb_id) if item.tmdb_id is not None else "",
+                    "omdb_id": str(item.omdb_id) if item.omdb_id is not None else "",
                 }
         return None

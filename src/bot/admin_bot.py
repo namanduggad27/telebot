@@ -49,8 +49,8 @@ def build_confirmation_keyboard(item_id: str) -> InlineKeyboardMarkup:
     )
 
 
-async def send_confirmation_card(item: MediaItem, tmdb_info: Optional[Dict[str, Any]] = None) -> Optional[int]:
-    """Send a rich media review card to the Admin User ID with TMDB poster and interactive approval buttons."""
+async def send_confirmation_card(item: MediaItem, omdb_info: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """Send a rich media review card to the Admin User ID with OMDB poster and interactive approval buttons."""
     bot_instance = get_bot()
     if not bot_instance or not settings.ADMIN_USER_ID:
         logger.warning(
@@ -65,15 +65,15 @@ async def send_confirmation_card(item: MediaItem, tmdb_info: Optional[Dict[str, 
     clean_name = item.clean_file_name or f"{title}.mkv"
     size_mb = round((item.file_size_bytes or 0) / (1024 * 1024), 2)
 
-    poster_url = tmdb_info.get("poster_url") if tmdb_info else None
-    overview = tmdb_info.get("overview") if tmdb_info else "No TMDB overview available."
-    vote_avg = tmdb_info.get("vote_average", 0.0) if tmdb_info else 0.0
+    poster_url = omdb_info.get("poster_url") if omdb_info else None
+    overview = omdb_info.get("overview") if omdb_info else "No OMDB overview available."
+    vote_avg = omdb_info.get("vote_average", 0.0) if omdb_info else 0.0
 
     caption = (
         f"🎬 **NEW MEDIA SCRAPED & ENRICHED**\n\n"
         f"📌 **Title:** `{title}`\n"
         f"📺 **Season/Episode:** `{season_str} / {episode_str}`\n"
-        f"⭐ **TMDB Rating:** `{vote_avg}/10`\n"
+        f"⭐ **OMDB Rating:** `{vote_avg}/10`\n"
         f"⚙️ **Quality Tag:** `{quality_str}`\n"
         f"💾 **File Size:** `{size_mb} MB`\n"
         f"📂 **Suggested Clean Name:**\n`{clean_name}`\n\n"

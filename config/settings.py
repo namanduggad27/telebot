@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from pydantic import Field, field_validator
+import json
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,7 +52,7 @@ class Settings(BaseSettings):
     )
 
     # External APIs
-    TMDB_API_KEY: str = Field(default="", description="TMDB API v3 Key")
+    OMDB_API_KEY: str = Field(default="", description="OMDB API Key")
     LINKS_BOT_USERNAME: str = Field(default="@YourLinksBot", description="Username of Links Bot")
 
     # Storage & Scratch paths
@@ -62,7 +63,24 @@ class Settings(BaseSettings):
     )
     POSTER_CACHE_DIR: Path = Field(
         default_factory=lambda: Path(os.environ.get("POSTER_CACHE_DIR", Path(__file__).resolve().parent.parent / "cache" / "posters")),
-        description="Local directory for cached TMDB posters",
+        description="Local directory for cached posters",
+    )
+    GLOBAL_THUMBNAIL_PATH: str = Field(
+        default="assets/default_thumb.jpg", description="Path to the global fallback thumbnail image"
+    )
+    
+    # Custom Formats
+    RENAME_FORMAT: str = Field(
+        default="{title} - S{season:02d}E{episode:02d} - [{quality}].{ext}",
+        description="Format string for the final cleaned filename",
+    )
+    CAPTION_FORMAT: str = Field(
+        default="🎬 **{title}**\n📺 **S{season:02d}E{episode:02d}** | {quality}\n📂 {filename}",
+        description="Format string for the Telegram message caption",
+    )
+    PRESENTATION_FORMAT: str = Field(
+        default="🍿 Title: {title}\n📆 Year: {year}\n📦 Quality: {quality}\n🔊 Audio : {audio}\n💬 English Subtitles 👍",
+        description="Format string for the photo presentation message",
     )
 
     # Database & Redis settings
@@ -88,5 +106,37 @@ class Settings(BaseSettings):
         self.SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
         self.POSTER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+    def load_dynamic_config(self) -> None:
+        """Load dynamic formats from config.json if it exists."""
+        config_path = self.BASE_DIR / "config.json"
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if "RENAME_FORMAT" in data:
+                        self.RENAME_FORMAT = data["RENAME_FORMAT"]
+                    if "CAPTION_FORMAT" in data:
+                        self.CAPTION_FORMAT = data["CAPTION_FORMAT"]
+                    if "PRESENTATION_FORMAT" in data:
+                        self.PRESENTATION_FORMAT = data["PRESENTATION_FORMAT"]
+            except Exception as e:
+                print(f"Error loading config.json: {e}")
+
+    def save_dynamic_config(self) -> None:
+        """Save dynamic formats to config.json."""
+        config_path = self.BASE_DIR / "config.json"
+        data = {
+            "RENAME_FORMAT": self.RENAME_FORMAT,
+            "CAPTION_FORMAT": self.CAPTION_FORMAT,
+            "PRESENTATION_FORMAT": getattr(self, "PRESENTATION_FORMAT", ""),
+        }
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            print(f"Error saving config.json: {e}")
+
 
 settings = Settings()
+settings.load_dynamic_config()
+

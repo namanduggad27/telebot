@@ -95,7 +95,7 @@ class RawChannelListener:
                 )
                 return
 
-            # Push the newly recorded item ID to the ARQ / Redis queue for Phase 2 TMDB enrichment
+            # Push the newly recorded item ID to the ARQ / Redis queue for Phase 2 OMDB enrichment
             try:
                 from arq import create_pool
                 from arq.connections import RedisSettings

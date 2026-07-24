@@ -5,14 +5,14 @@ from sqlalchemy import select
 from src.db.models import MediaItem, PipelineStatus
 from src.db.session import get_db_session
 from src.services.state_machine import StateMachine
-from src.services.tmdb_client import TMDBClient
+from src.services.omdb_client import OMDBClient
 from src.bot.admin_bot import send_confirmation_card
 
 logger = logging.getLogger("workers.metadata_worker")
 
 
 async def enrich_metadata_task(ctx: Dict[str, Any], item_id: str) -> bool:
-    """ARQ background task that queries TMDB for poster/overview and triggers the HITL confirmation card."""
+    """ARQ background task that queries OMDB for poster/overview and triggers the HITL confirmation card."""
     logger.info(f"Starting metadata enrichment task for item ID={item_id}")
 
     # 1. Fetch item from database
@@ -33,34 +33,33 @@ async def enrich_metadata_task(ctx: Dict[str, Any], item_id: str) -> bool:
         )
         return False
 
-    # 2. Query TMDB API
-    tmdb_client = TMDBClient()
+    # 2. Query OMDB API
+    omdb_client = OMDBClient()
     # Check if title has year appended or in parsed_title
     query_title = item.parsed_title or ""
-    tmdb_result = None
+    omdb_result = None
 
     try:
-        tmdb_result = await tmdb_client.search_media(query_title=query_title)
+        omdb_result = await omdb_client.search_media(query_title=query_title, year=item.season_num if item.season_num is None else None) # we could use year here but we don't have it easily
     except Exception as e:
-        logger.error(f"TMDB query error for ID={item_id}: {e}")
+        logger.error(f"OMDB query error for ID={item_id}: {e}")
 
-    tmdb_info = {}
+    omdb_info = {}
     extra_meta = {}
 
-    if tmdb_result:
+    if omdb_result:
         logger.info(
-            f"TMDB Match ID={item_id}: title='{tmdb_result.title}', tmdb_id={tmdb_result.tmdb_id}, rating={tmdb_result.vote_average}"
+            f"OMDB Match ID={item_id}: title='{omdb_result.title}', omdb_id={omdb_result.omdb_id}, rating={omdb_result.vote_average}"
         )
-        extra_meta["tmdb_id"] = tmdb_result.tmdb_id
-        tmdb_info = {
-            "poster_url": tmdb_result.poster_url,
-            "backdrop_url": tmdb_result.backdrop_url,
-            "overview": tmdb_result.overview,
-            "vote_average": tmdb_result.vote_average,
-            "release_date": tmdb_result.release_date,
+        extra_meta["omdb_id"] = omdb_result.omdb_id
+        omdb_info = {
+            "poster_url": omdb_result.poster_url,
+            "overview": omdb_result.overview,
+            "vote_average": omdb_result.vote_average,
+            "release_date": omdb_result.year,
         }
     else:
-        logger.warning(f"No TMDB match for ID={item_id}. Proceeding with raw parsed metadata.")
+        logger.warning(f"No OMDB match for ID={item_id}. Proceeding with raw parsed metadata.")
 
     # 3. Transition to ENRICHED
     success = await StateMachine.transition_item(

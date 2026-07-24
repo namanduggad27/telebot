@@ -25,30 +25,7 @@ class FileIOEngine:
     # Concurrency semaphore to prevent saturating MTProto connections and triggering Telegram FloodWait
     _semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_TRANSFERS)
 
-    @classmethod
-    async def download_and_prepare_thumbnail(cls, poster_url: str, item_id: str) -> Optional[Path]:
-        """Download TMDB poster and resize/compress into a Telegram-compliant video thumbnail (<=320x320 JPEG, <200KB)."""
-        if not poster_url:
-            return None
 
-        thumb_path = settings.POSTER_CACHE_DIR / f"{item_id}_thumb.jpg"
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(poster_url)
-                resp.raise_for_status()
-                image_data = resp.content
-
-            # Open with Pillow, convert to RGB, resize keeping aspect ratio within 320x320
-            img = Image.open(BytesIO(image_data))
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            img.thumbnail((320, 320), Image.Resampling.LANCZOS)
-            img.save(thumb_path, "JPEG", quality=85)
-            logger.info(f"Prepared thumbnail for ID={item_id} at {thumb_path} ({thumb_path.stat().st_size} bytes)")
-            return thumb_path
-        except Exception as e:
-            logger.warning(f"Could not prepare thumbnail for ID={item_id} from {poster_url}: {e}")
-            return None
 
     @classmethod
     async def _safe_mtproto_action(cls, coro_fn, *args, **kwargs) -> Any:
@@ -101,12 +78,19 @@ class FileIOEngine:
             
             cached_state = await StateMachine.get_cached_state(item_id)
             custom_thumb = item.custom_thumbnail_path or (cached_state.get("custom_thumbnail_path") if cached_state else None)
+            
+            is_global_thumb = False
             if custom_thumb and Path(custom_thumb).exists():
                 thumb_path = Path(custom_thumb)
                 logger.info(f"Using custom thumbnail for ID={item_id}: {thumb_path}")
             else:
-                poster_url = cached_state.get("tmdb_poster_url") if cached_state else None
-                thumb_path = await cls.download_and_prepare_thumbnail(poster_url, item_id) if poster_url else None
+                thumb_path = Path(settings.GLOBAL_THUMBNAIL_PATH)
+                if thumb_path.exists():
+                    logger.info(f"Using global thumbnail for ID={item_id}: {thumb_path}")
+                    is_global_thumb = True
+                else:
+                    logger.warning(f"Global thumbnail not found at {thumb_path}. Sending without thumbnail.")
+                    thumb_path = None
 
             # 4. Initialize MTProto client session
             if not settings.TG_API_ID or not settings.TG_API_HASH:
@@ -162,14 +146,24 @@ class FileIOEngine:
                 await StateMachine.transition_item(item_id, PipelineStatus.UPLOADING_SHADOW)
 
                 # 6. Upload renamed file + thumbnail to Shadow Database Channel with real-time progress bar
-                season_str = f"S{item.season_num:02d}" if item.season_num is not None else "N/A"
-                episode_str = f"E{item.episode_num:02d}" if item.episode_num is not None else "N/A"
-                caption = (
-                    f"🎬 **{item.parsed_title or 'Unknown Title'}**\n"
-                    f"📺 **{season_str} / {episode_str}** | `{item.quality_tag or 'HD'}`\n"
-                    f"📂 `{clean_name}`\n"
-                    f"🆔 `{item.file_unique_id}`"
-                )
+                try:
+                    caption = settings.CAPTION_FORMAT.format(
+                        title=item.parsed_title or 'Unknown Title',
+                        season=item.season_num if item.season_num is not None else 0,
+                        episode=item.episode_num if item.episode_num is not None else 0,
+                        quality=item.quality_tag or 'Unknown',
+                        filename=clean_name
+                    )
+                except KeyError:
+                    # Fallback if format string is malformed
+                    season_str = f"S{item.season_num:02d}" if item.season_num is not None else "N/A"
+                    episode_str = f"E{item.episode_num:02d}" if item.episode_num is not None else "N/A"
+                    caption = (
+                        f"🎬 **{item.parsed_title or 'Unknown Title'}**\n"
+                        f"📺 **{season_str} / {episode_str}** | `{item.quality_tag or 'HD'}`\n"
+                        f"📂 `{clean_name}`\n"
+                        f"🆔 `{item.file_unique_id}`"
+                    )
 
                 logger.info(f"Uploading {clean_name} to Shadow Channel ID={settings.SHADOW_CHANNEL_ID}...")
                 if not settings.SHADOW_CHANNEL_ID:
@@ -214,7 +208,7 @@ class FileIOEngine:
                     if scratch_path.exists():
                         scratch_path.unlink()
                         logger.info(f"Cleaned up scratch file: {scratch_path}")
-                    if thumb_path and thumb_path.exists():
+                    if thumb_path and thumb_path.exists() and not is_global_thumb:
                         thumb_path.unlink()
                 except Exception as cleanup_err:
                     logger.warning(f"Error cleaning up scratch files for ID={item_id}: {cleanup_err}")
@@ -242,3 +236,162 @@ class FileIOEngine:
                 if client and client.is_connected:
                     await client.stop()
                     logger.info("MTProto I/O Client disconnected cleanly.")
+
+
+    @classmethod
+    async def process_batch_io(cls, item_ids: list[int]) -> bool:
+        """Execute full Phase 3 & 4 I/O lifecycle for a batch of files."""
+        from src.services.native_batch_engine import NativeBatchEngine
+        from src.scrapers.regex_engine import RegexEngine
+        
+        logger.info(f"Starting batch I/O processing for IDs={item_ids}")
+        
+        items = []
+        async for db in get_db_session():
+            stmt = select(MediaItem).where(MediaItem.id.in_(item_ids)).order_by(MediaItem.episode_num)
+            res = await db.execute(stmt)
+            items = list(res.scalars().all())
+            break
+            
+        if not items:
+            logger.error("No items found for batch.")
+            return False
+            
+        first_item = items[0]
+        settings.ensure_directories()
+        
+        if not settings.TG_API_ID or not settings.TG_API_HASH:
+            return False
+            
+        main_sess = settings.BASE_DIR / f"{settings.TG_USERBOT_SESSION}.session"
+        io_sess = settings.BASE_DIR / f"{settings.TG_USERBOT_SESSION}_io.session"
+        if main_sess.exists() and (not io_sess.exists() or io_sess.stat().st_size < 1000):
+            import shutil
+            shutil.copy2(main_sess, io_sess)
+            
+        client = Client(
+            name=f"{settings.TG_USERBOT_SESSION}_io",
+            api_id=settings.TG_API_ID,
+            api_hash=settings.TG_API_HASH,
+            workdir=str(settings.BASE_DIR),
+        )
+        
+        try:
+            await client.start()
+            dest_channel = settings.SHADOW_CHANNEL_ID or first_item.raw_channel_id
+            
+            thumb_path = Path(settings.GLOBAL_THUMBNAIL_PATH)
+            photo_file = str(thumb_path) if thumb_path.exists() else None
+            
+            pres_text = settings.PRESENTATION_FORMAT.format(
+                title=first_item.parsed_title or "Unknown",
+                year="2024",
+                quality=first_item.quality_tag or "1080p",
+                audio="Hindi / English"
+            )
+            
+            logger.info("Sending presentation photo to shadow channel...")
+            if photo_file:
+                await cls._safe_mtproto_action(
+                    client.send_photo,
+                    chat_id=dest_channel,
+                    photo=photo_file,
+                    caption=pres_text,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await cls._safe_mtproto_action(
+                    client.send_message,
+                    chat_id=dest_channel,
+                    text=pres_text,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                
+            for item in items:
+                await StateMachine.transition_item(item.id, PipelineStatus.DOWNLOADING)
+                
+                raw_msg = await cls._safe_mtproto_action(client.get_messages, item.raw_channel_id, item.raw_message_id)
+                media_obj = raw_msg.video or raw_msg.document if raw_msg else None
+                if not media_obj:
+                    continue
+                    
+                clean_name = RegexEngine.format_custom_name(item, settings.RENAME_FORMAT)
+                item.clean_file_name = clean_name
+                scratch_path = settings.SCRATCH_DIR / f"{item.id}_{clean_name}"
+                
+                download_tracker = ProgressTracker("DOWNLOAD", str(item.id), clean_name)
+                downloaded_file = await cls._safe_mtproto_action(
+                    client.download_media,
+                    media_obj,
+                    file_name=str(scratch_path),
+                    progress=download_tracker.on_progress,
+                )
+                
+                await StateMachine.transition_item(item.id, PipelineStatus.UPLOADING_SHADOW)
+                
+                # Use empty caption for actual files in shadow channel!
+                upload_tracker = ProgressTracker("UPLOAD", str(item.id), clean_name, telegram_message_id=download_tracker.telegram_message_id)
+                sent_msg = await cls._safe_mtproto_action(
+                    client.send_document,
+                    chat_id=dest_channel,
+                    document=str(scratch_path),
+                    caption="",
+                    parse_mode=ParseMode.MARKDOWN,
+                    file_name=clean_name,
+                    thumb=photo_file,
+                    progress=upload_tracker.on_progress,
+                )
+                
+                if sent_msg:
+                    shadow_media = sent_msg.video or sent_msg.document
+                    shadow_file_id = shadow_media.file_id if shadow_media else str(sent_msg.id)
+                    
+                    async for db in get_db_session():
+                        stmt = select(MediaItem).where(MediaItem.id == item.id)
+                        res = await db.execute(stmt)
+                        db_item = res.scalar_one_or_none()
+                        if db_item:
+                            db_item.shadow_message_id = sent_msg.id
+                            db_item.shadow_file_id = shadow_file_id
+                            await db.commit()
+                        break
+                        
+                if scratch_path.exists():
+                    scratch_path.unlink()
+                    
+                await StateMachine.transition_item(item.id, PipelineStatus.SHADOW_ARCHIVED)
+
+            logger.info("Batch uploaded to shadow. Generating batch link...")
+            batch_url = await NativeBatchEngine.generate_custom_batch_url(item_ids)
+            
+            main_channel = settings.MAIN_CHANNEL_ID
+            if main_channel:
+                logger.info(f"Posting batch link to Main Channel ({main_channel})...")
+                post_text = f"{pres_text}\n\n🔗 **[BATCH LINK]({batch_url})**"
+                if photo_file:
+                    try:
+                        from aiogram import Bot
+                        from aiogram.client.default import DefaultBotProperties
+                        bot = Bot(token=settings.ADMIN_BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown"))
+                        from aiogram.types import FSInputFile
+                        await bot.send_photo(chat_id=main_channel, photo=FSInputFile(photo_file), caption=post_text)
+                        await bot.session.close()
+                    except Exception as e:
+                        logger.error(f"Failed to post to main channel via Bot: {e}")
+                else:
+                    await cls._safe_mtproto_action(
+                        client.send_message,
+                        chat_id=main_channel,
+                        text=post_text,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Fatal error during batch I/O: {e}", exc_info=True)
+            return False
+        finally:
+            if client and client.is_connected:
+                await client.stop()
+

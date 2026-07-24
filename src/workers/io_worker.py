@@ -18,3 +18,17 @@ async def process_media_io_task(ctx: Dict[str, Any], item_id: str) -> bool:
     except Exception as e:
         logger.error(f"Fatal exception during process_media_io_task for ID={item_id}: {e}", exc_info=True)
         return False
+
+async def process_batch_io_task(ctx: Dict[str, Any], item_ids: list[int]) -> bool:
+    """ARQ background task that executes batch processing for multiple selected files."""
+    logger.info(f"Starting Batch I/O processing task for IDs={item_ids}")
+    try:
+        success = await FileIOEngine.process_batch_io(item_ids)
+        if success:
+            logger.info(f"Batch I/O task completed successfully for IDs={item_ids}")
+        else:
+            logger.error(f"Batch I/O task failed for IDs={item_ids}")
+        return success
+    except Exception as e:
+        logger.error(f"Fatal exception during process_batch_io_task for IDs={item_ids}: {e}", exc_info=True)
+        return False

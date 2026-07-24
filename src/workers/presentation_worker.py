@@ -70,17 +70,17 @@ async def batch_link_and_post_task(ctx: Dict[str, Any], item_id: str) -> bool:
         logger.info("Using NativeBatchEngine to generate self-contained deep-link parameter URL...")
         batch_url = await NativeBatchEngine.generate_shareable_url(item)
 
-    # 4. Fetch cached TMDB state
+    # 4. Fetch cached OMDB state
     cached_state = await StateMachine.get_cached_state(item_id)
-    tmdb_info = {
+    omdb_info = {
         "vote_average": float(cached_state.get("vote_average", 8.0)) if cached_state else 8.0,
         "release_date": cached_state.get("release_date", "2024-01-01") if cached_state else "2024-01-01",
-        "overview": cached_state.get("tmdb_overview", "") if cached_state else "",
+        "overview": cached_state.get("omdb_overview", "") if cached_state else "",
     }
-    poster_url = cached_state.get("tmdb_poster_url") if cached_state else None
+    poster_url = cached_state.get("omdb_poster_url") if cached_state else None
 
     # 5. Generate stylized caption and inline action buttons
-    caption, keyboard = generate_presentation_post(item, tmdb_info, batch_url)
+    caption, keyboard = generate_presentation_post(item, omdb_info, batch_url)
 
     # 6. Publish to Main Presentation Channel (`settings.MAIN_CHANNEL_ID`) via Aiogram Bot or Userbot
     main_msg_id = None

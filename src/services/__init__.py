@@ -1,1 +1,1 @@
-"""Service modules for state management, TMDB API integration, and business logic."""
+"""Service modules for state management, OMDB API integration, and business logic."""

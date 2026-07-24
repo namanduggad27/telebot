@@ -44,7 +44,7 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
         try:
             await conn.execute(text("ALTER TABLE media_items DROP CONSTRAINT IF EXISTS media_items_file_unique_id_key;"))
-            await conn.execute(text("ALTER TABLE media_items DROP CONSTRAINT IF EXISTS uq_tmdb_season_episode_quality;"))
+            await conn.execute(text("ALTER TABLE media_items DROP CONSTRAINT IF EXISTS uq_omdb_season_episode_quality;"))
             await conn.execute(text("ALTER TABLE media_items ADD COLUMN IF NOT EXISTS custom_thumbnail_path VARCHAR(512);"))
         except Exception as e:
             # Ignore errors if using SQLite in tests or if table/constraint does not exist
