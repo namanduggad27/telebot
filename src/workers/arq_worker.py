@@ -40,4 +40,4 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
     max_jobs = 10
-    job_timeout = 600  # 10 minutes timeout per task
+    job_timeout = 3600  # 1 hour timeout per task to handle large files/slow network

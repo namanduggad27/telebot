@@ -228,9 +228,31 @@ class FileIOEngine:
 
                 return True
 
-            except Exception as e:
-                logger.error(f"Fatal error during MTProto I/O processing for ID={item_id}: {e}", exc_info=True)
-                await StateMachine.transition_item(item_id, PipelineStatus.FAILED)
+            except (Exception, asyncio.CancelledError) as e:
+                logger.error(f"Fatal error or timeout during MTProto I/O processing for ID={item_id}: {e}", exc_info=True)
+                
+                # Delete item from DB so it can be processed again
+                async for db in get_db_session():
+                    from sqlalchemy import delete
+                    stmt = delete(MediaItem).where(MediaItem.id == int(item_id))
+                    await db.execute(stmt)
+                    await db.commit()
+                    break
+                    
+                # Notify Admin
+                try:
+                    from aiogram import Bot
+                    from aiogram.client.default import DefaultBotProperties
+                    bot = Bot(token=settings.ADMIN_BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown"))
+                    err_msg = str(e) or "Task timed out or was cancelled."
+                    error_text = f"❌ **I/O Processing Failed!**\n\nError: `{err_msg}`\n\nThe file has been removed from the database. Please forward it to the raw channel again to retry."
+                    await bot.send_message(chat_id=settings.ADMIN_USER_ID, text=error_text)
+                    await bot.session.close()
+                except Exception as notify_err:
+                    logger.error(f"Failed to send failure notification to admin: {notify_err}")
+
+                if isinstance(e, asyncio.CancelledError):
+                    raise
                 return False
             finally:
                 if client and client.is_connected:
@@ -388,8 +410,31 @@ class FileIOEngine:
             
             return True
             
-        except Exception as e:
-            logger.error(f"Fatal error during batch I/O: {e}", exc_info=True)
+        except (Exception, asyncio.CancelledError) as e:
+            logger.error(f"Fatal error or timeout during batch I/O: {e}", exc_info=True)
+            
+            # Delete items from DB so they can be processed again
+            async for db in get_db_session():
+                from sqlalchemy import delete
+                stmt = delete(MediaItem).where(MediaItem.id.in_(item_ids))
+                await db.execute(stmt)
+                await db.commit()
+                break
+                
+            # Notify Admin
+            try:
+                from aiogram import Bot
+                from aiogram.client.default import DefaultBotProperties
+                bot = Bot(token=settings.ADMIN_BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown"))
+                err_msg = str(e) or "Task timed out or was cancelled."
+                error_text = f"❌ **Batch Processing Failed!**\n\nError: `{err_msg}`\n\nThe files have been removed from the database. Please forward them to the raw channel again to retry."
+                await bot.send_message(chat_id=settings.ADMIN_USER_ID, text=error_text)
+                await bot.session.close()
+            except Exception as notify_err:
+                logger.error(f"Failed to send failure notification to admin: {notify_err}")
+
+            if isinstance(e, asyncio.CancelledError):
+                raise
             return False
         finally:
             if client and client.is_connected:
