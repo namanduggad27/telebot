@@ -33,33 +33,45 @@ async def enrich_metadata_task(ctx: Dict[str, Any], item_id: str) -> bool:
         )
         return False
 
-    # 2. Query OMDB API
-    omdb_client = OMDBClient()
-    # Check if title has year appended or in parsed_title
+    # 2. Query TMDB API (and fallback to OMDB)
+    from src.services.tmdb_client import TMDBClient
+    tmdb_client = TMDBClient()
     query_title = item.parsed_title or ""
-    omdb_result = None
+    tmdb_result = None
 
     try:
-        omdb_result = await omdb_client.search_media(query_title=query_title, year=item.season_num if item.season_num is None else None) # we could use year here but we don't have it easily
+        tmdb_result = await tmdb_client.search_media(query_title=query_title)
     except Exception as e:
-        logger.error(f"OMDB query error for ID={item_id}: {e}")
+        logger.warning(f"TMDB query error for ID={item_id}: {e}")
 
-    omdb_info = {}
     extra_meta = {}
 
-    if omdb_result:
+    if tmdb_result:
         logger.info(
-            f"OMDB Match ID={item_id}: title='{omdb_result.title}', omdb_id={omdb_result.omdb_id}, rating={omdb_result.vote_average}"
+            f"TMDB Match ID={item_id}: title='{tmdb_result.title}', tmdb_id={tmdb_result.tmdb_id}, poster={tmdb_result.poster_url}"
         )
-        extra_meta["omdb_id"] = omdb_result.omdb_id
-        omdb_info = {
-            "poster_url": omdb_result.poster_url,
-            "overview": omdb_result.overview,
-            "vote_average": omdb_result.vote_average,
-            "release_date": omdb_result.year,
-        }
+        extra_meta["tmdb_id"] = str(tmdb_result.tmdb_id)
+        extra_meta["poster_url"] = tmdb_result.poster_url
+        extra_meta["backdrop_url"] = tmdb_result.backdrop_url
+        extra_meta["overview"] = tmdb_result.overview
+        extra_meta["vote_average"] = tmdb_result.vote_average
+        extra_meta["release_date"] = tmdb_result.release_date or ""
     else:
-        logger.warning(f"No OMDB match for ID={item_id}. Proceeding with raw parsed metadata.")
+        # Fallback to OMDB
+        omdb_client = OMDBClient()
+        try:
+            omdb_result = await omdb_client.search_media(query_title=query_title)
+            if omdb_result:
+                logger.info(
+                    f"OMDB Match ID={item_id}: title='{omdb_result.title}', omdb_id={omdb_result.omdb_id}"
+                )
+                extra_meta["omdb_id"] = omdb_result.omdb_id
+                extra_meta["poster_url"] = omdb_result.poster_url
+                extra_meta["overview"] = omdb_result.overview
+                extra_meta["vote_average"] = omdb_result.vote_average
+                extra_meta["release_date"] = omdb_result.year
+        except Exception as omdb_err:
+            logger.warning(f"OMDB fallback error for ID={item_id}: {omdb_err}")
 
     # 3. Transition to ENRICHED
     success = await StateMachine.transition_item(

@@ -14,7 +14,7 @@ def test_stylize_title():
 def test_generate_presentation_post():
     """Verify complete Main Channel presentation caption formatting and inline buttons."""
     item = MediaItem(
-        id="123e4567-e89b-12d3-a456-426614174000",
+        id=1,
         raw_message_id=1,
         raw_channel_id=-1001,
         raw_file_id="fid123",
@@ -27,16 +27,16 @@ def test_generate_presentation_post():
         codec_tag="x265",
         clean_file_name="Severance - S01E09.mkv",
         status=PipelineStatus.SHADOW_ARCHIVED,
-        tmdb_id=95557,
+        omdb_id="tt0944947",
     )
 
-    tmdb_info = {
+    omdb_info = {
         "vote_average": 8.7,
         "release_date": "2022-02-18",
         "overview": "Mark leads a team of office workers whose memories have been surgically divided between their work and personal lives.",
     }
 
-    caption, keyboard = generate_presentation_post(item, tmdb_info, batch_link_url="https://t.me/LinksBot?start=batch123")
+    caption, keyboard = generate_presentation_post(item, omdb_info, batch_link_url="https://t.me/LinksBot?start=batch123")
 
     assert "SEVERANCE" in caption
     assert "(2022)" in caption
@@ -46,4 +46,4 @@ def test_generate_presentation_post():
     assert "1.4 GB" in caption
     assert len(keyboard.inline_keyboard) == 2
     assert keyboard.inline_keyboard[0][0].url == "https://t.me/LinksBot?start=batch123"
-    assert "themoviedb.org/tv/95557" in keyboard.inline_keyboard[1][0].url
+    assert "imdb.com/title/tt0944947" in keyboard.inline_keyboard[1][0].url

@@ -1,0 +1,7 @@
+{
+    "RENAME_FORMAT": "[TIF]_S{season:02d}_E{episode:02d}_{clean_title}_{quality}_{audio}.{ext}",
+    "CAPTION_FORMAT": "\ud83c\udfa5 {title} ({year})\n**\ud83c\udfac {se_prefix}{quality}\u00d7{codec} Esub \ud83d\udc4d**\n**\ud83d\udce2 Audio: {audio}**\n\u0f3a\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u0f3b\n@TIF_Shoppie\ud83c\udf39@TIF_Network",
+    "PRESENTATION_FORMAT": "🍿 Title: {title}\n📆 Year: {year}\n📦 Quality: {quality}\n🔊 Audio : {audio}\n💬 English Subtitles 👍",
+    "RTG_MESSAGE_FORMAT": "🎭 {title} • {year}\n{season_line}🎧 ᴀᴜᴅɪᴏ - {audio}\n💬 sᴜʙᴛɪᴛʟᴇs 👍\n\n🎞 ϙᴜᴀʟɪᴛʏ - {quality}\n\n༺━━━━━━━━━━━━━━━༻\n@TIF_TvSeries11🌹@TIF_WebSeries",
+    "GLOBAL_THUMBNAIL_PATH": "D:\\Ideas\\telebot\\assets\\global_thumb.jpg"
+}

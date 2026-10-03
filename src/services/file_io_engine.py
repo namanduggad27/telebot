@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, Tuple, Any, Dict
@@ -15,6 +16,7 @@ from src.db.models import MediaItem, PipelineStatus
 from src.db.session import get_db_session
 from src.services.state_machine import StateMachine
 from src.services.progress_tracker import ProgressTracker
+from src.scrapers.regex_engine import RegexEngine
 
 logger = logging.getLogger("services.file_io_engine")
 
@@ -42,6 +44,27 @@ class FileIOEngine:
                 logger.error(f"MTProto I/O action failed: {ex}")
                 raise
         raise RuntimeError(f"Exceeded {max_retries} retries due to repeated FloodWaits.")
+
+    @classmethod
+    def prepare_thumbnail(cls, thumb_path: Optional[Path]) -> Optional[str]:
+        """Ensure thumbnail exists, is converted to standard RGB JPEG <= 320x320 for MTProto compliance."""
+        if not thumb_path or not thumb_path.exists():
+            return None
+        try:
+            from PIL import Image
+            with Image.open(thumb_path) as im:
+                if im.format == "JPEG" and im.mode == "RGB" and max(im.size) <= 320:
+                    return str(thumb_path)
+
+                settings.SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+                norm_thumb = settings.SCRATCH_DIR / f"thumb_{thumb_path.stem}.jpg"
+                rgb_im = im.convert("RGB")
+                rgb_im.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                rgb_im.save(norm_thumb, "JPEG", quality=90, optimize=True)
+                return str(norm_thumb)
+        except Exception as e:
+            logger.debug(f"Thumbnail normalization skipped or failed for {thumb_path}: {e}")
+            return str(thumb_path)
 
     @classmethod
     async def process_item_io(cls, item_id: str) -> bool:
@@ -84,12 +107,12 @@ class FileIOEngine:
                 thumb_path = Path(custom_thumb)
                 logger.info(f"Using custom thumbnail for ID={item_id}: {thumb_path}")
             else:
-                thumb_path = Path(settings.GLOBAL_THUMBNAIL_PATH)
-                if thumb_path.exists():
+                thumb_path = settings.get_thumbnail_path()
+                if thumb_path:
                     logger.info(f"Using global thumbnail for ID={item_id}: {thumb_path}")
                     is_global_thumb = True
                 else:
-                    logger.warning(f"Global thumbnail not found at {thumb_path}. Sending without thumbnail.")
+                    logger.info(f"No global thumbnail found. Sending without thumbnail.")
                     thumb_path = None
 
             # 4. Initialize MTProto client session
@@ -146,24 +169,7 @@ class FileIOEngine:
                 await StateMachine.transition_item(item_id, PipelineStatus.UPLOADING_SHADOW)
 
                 # 6. Upload renamed file + thumbnail to Shadow Database Channel with real-time progress bar
-                try:
-                    caption = settings.CAPTION_FORMAT.format(
-                        title=item.parsed_title or 'Unknown Title',
-                        season=item.season_num if item.season_num is not None else 0,
-                        episode=item.episode_num if item.episode_num is not None else 0,
-                        quality=item.quality_tag or 'Unknown',
-                        filename=clean_name
-                    )
-                except KeyError:
-                    # Fallback if format string is malformed
-                    season_str = f"S{item.season_num:02d}" if item.season_num is not None else "N/A"
-                    episode_str = f"E{item.episode_num:02d}" if item.episode_num is not None else "N/A"
-                    caption = (
-                        f"🎬 **{item.parsed_title or 'Unknown Title'}**\n"
-                        f"📺 **{season_str} / {episode_str}** | `{item.quality_tag or 'HD'}`\n"
-                        f"📂 `{clean_name}`\n"
-                        f"🆔 `{item.file_unique_id}`"
-                    )
+                caption = RegexEngine.format_caption(item, settings.CAPTION_FORMAT)
 
                 logger.info(f"Uploading {clean_name} to Shadow Channel ID={settings.SHADOW_CHANNEL_ID}...")
                 if not settings.SHADOW_CHANNEL_ID:
@@ -178,7 +184,7 @@ class FileIOEngine:
                     caption=caption,
                     parse_mode=ParseMode.MARKDOWN,
                     file_name=clean_name,
-                    thumb=str(thumb_path) if thumb_path and thumb_path.exists() else None,
+                    thumb=cls.prepare_thumbnail(thumb_path),
                     progress=upload_tracker.on_progress,
                 )
 
@@ -302,39 +308,20 @@ class FileIOEngine:
             await client.start()
             dest_channel = settings.SHADOW_CHANNEL_ID or first_item.raw_channel_id
             
-            thumb_path = Path(settings.GLOBAL_THUMBNAIL_PATH)
-            photo_file = str(thumb_path) if thumb_path.exists() else None
+            thumb_path = settings.get_thumbnail_path()
+            photo_file = str(thumb_path) if thumb_path else None
             
-            pres_text = settings.PRESENTATION_FORMAT.format(
-                title=first_item.parsed_title or "Unknown",
-                year="2024",
-                quality=first_item.quality_tag or "1080p",
-                audio="Hindi / English"
-            )
+            shadow_desc_text = RegexEngine.format_shadow_description(first_item)
             
-            logger.info("Sending presentation photo to shadow channel...")
-            if photo_file:
-                await cls._safe_mtproto_action(
-                    client.send_photo,
-                    chat_id=dest_channel,
-                    photo=photo_file,
-                    caption=pres_text,
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            else:
-                await cls._safe_mtproto_action(
-                    client.send_message,
-                    chat_id=dest_channel,
-                    text=pres_text,
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                
+            # 1. Download all items in batch first
+            downloaded_entries = []
             for item in items:
                 await StateMachine.transition_item(item.id, PipelineStatus.DOWNLOADING)
                 
                 raw_msg = await cls._safe_mtproto_action(client.get_messages, item.raw_channel_id, item.raw_message_id)
                 media_obj = raw_msg.video or raw_msg.document if raw_msg else None
                 if not media_obj:
+                    logger.warning(f"Could not retrieve raw media object for item ID={item.id}")
                     continue
                     
                 clean_name = RegexEngine.format_custom_name(item, settings.RENAME_FORMAT)
@@ -349,18 +336,47 @@ class FileIOEngine:
                     progress=download_tracker.on_progress,
                 )
                 
+                if scratch_path.exists():
+                    downloaded_entries.append((item, scratch_path, clean_name, download_tracker))
+
+            if not downloaded_entries:
+                logger.error("No files were successfully downloaded in this batch.")
+                return False
+
+            # 2. Generate batch link once files are ready
+            logger.info("Batch downloaded. Generating batch link...")
+            batch_url = await NativeBatchEngine.generate_custom_batch_url(item_ids)
+
+            # 3. Send presentation description message to Shadow Channel immediately before file uploads (text only, shadow format)
+            logger.info("Sending presentation description message to Shadow Channel together with files...")
+            await cls._safe_mtproto_action(
+                client.send_message,
+                chat_id=dest_channel,
+                text=shadow_desc_text,
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+            # 4. Upload each file into the Shadow Channel with formatted caption, clean filename, and thumbnail
+            for item, scratch_path, clean_name, download_tracker in downloaded_entries:
                 await StateMachine.transition_item(item.id, PipelineStatus.UPLOADING_SHADOW)
                 
-                # Use empty caption for actual files in shadow channel!
+                raw_thumb = (
+                    Path(item.custom_thumbnail_path)
+                    if item.custom_thumbnail_path and Path(item.custom_thumbnail_path).exists()
+                    else thumb_path
+                )
+                item_thumb = cls.prepare_thumbnail(raw_thumb)
+                
+                caption = RegexEngine.format_caption(item, settings.CAPTION_FORMAT)
                 upload_tracker = ProgressTracker("UPLOAD", str(item.id), clean_name, telegram_message_id=download_tracker.telegram_message_id)
                 sent_msg = await cls._safe_mtproto_action(
                     client.send_document,
                     chat_id=dest_channel,
                     document=str(scratch_path),
-                    caption="",
+                    caption=caption,
                     parse_mode=ParseMode.MARKDOWN,
                     file_name=clean_name,
-                    thumb=photo_file,
+                    thumb=item_thumb,
                     progress=upload_tracker.on_progress,
                 )
                 
@@ -382,31 +398,80 @@ class FileIOEngine:
                     scratch_path.unlink()
                     
                 await StateMachine.transition_item(item.id, PipelineStatus.SHADOW_ARCHIVED)
-
-            logger.info("Batch uploaded to shadow. Generating batch link...")
-            batch_url = await NativeBatchEngine.generate_custom_batch_url(item_ids)
             
             main_channel = settings.MAIN_CHANNEL_ID
             if main_channel:
                 logger.info(f"Posting batch link to Main Channel ({main_channel})...")
-                post_text = f"{pres_text}\n\n🔗 **[BATCH LINK]({batch_url})**"
-                if photo_file:
+                rtg_text = RegexEngine.format_rtg_message(first_item, batch_items=items)
+                post_text = f"{rtg_text}\n\n🔗 **[BATCH LINK]({batch_url})**"
+
+                # Fetch official poster from TMDB for the RTG message
+                poster_path = None
+                try:
+                    from src.services.tmdb_client import TMDBClient
+                    tmdb_cli = TMDBClient()
+                    year_val = None
+                    m_year = re.search(r"\b(19\d\d|20\d\d)\b", f"{first_item.clean_file_name} {first_item.parsed_title}")
+                    if m_year:
+                        year_val = int(m_year.group(1))
+
+                    tmdb_res = await tmdb_cli.search_media(first_item.parsed_title, year=year_val)
+                    if tmdb_res and tmdb_res.poster_url:
+                        scratch_poster = settings.SCRATCH_DIR / f"tmdb_poster_{first_item.id}.jpg"
+                        if await tmdb_cli.download_poster(tmdb_res.poster_url, scratch_poster):
+                            poster_path = scratch_poster
+                            logger.info(f"Retrieved TMDB poster for RTG message: {tmdb_res.poster_url}")
+                except Exception as tmdb_err:
+                    logger.warning(f"Could not retrieve TMDB poster for RTG message: {tmdb_err}")
+
+                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                reply_markup = InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="🚀 Get Files / Batch Link", url=batch_url)]]
+                )
+
+                if poster_path and poster_path.exists():
                     try:
                         from aiogram import Bot
                         from aiogram.client.default import DefaultBotProperties
                         bot = Bot(token=settings.ADMIN_BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown"))
                         from aiogram.types import FSInputFile
-                        await bot.send_photo(chat_id=main_channel, photo=FSInputFile(photo_file), caption=post_text)
+                        await bot.send_photo(
+                            chat_id=main_channel,
+                            photo=FSInputFile(str(poster_path)),
+                            caption=post_text,
+                            reply_markup=reply_markup,
+                        )
                         await bot.session.close()
                     except Exception as e:
-                        logger.error(f"Failed to post to main channel via Bot: {e}")
+                        logger.error(f"Failed to post TMDB poster to main channel via Bot: {e}")
+                    finally:
+                        try:
+                            if poster_path.exists():
+                                poster_path.unlink()
+                        except Exception:
+                            pass
                 else:
-                    await cls._safe_mtproto_action(
-                        client.send_message,
-                        chat_id=main_channel,
-                        text=post_text,
-                        parse_mode=ParseMode.MARKDOWN
-                    )
+                    # If there is no poster from TMDB side, show NO image, only text message
+                    logger.info("No TMDB poster available. Posting text-only RTG message to Main Channel.")
+                    try:
+                        from aiogram import Bot
+                        from aiogram.client.default import DefaultBotProperties
+                        bot = Bot(token=settings.ADMIN_BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown"))
+                        await bot.send_message(
+                            chat_id=main_channel,
+                            text=post_text,
+                            parse_mode="Markdown",
+                            reply_markup=reply_markup,
+                        )
+                        await bot.session.close()
+                    except Exception as e:
+                        logger.warning(f"Failed to post text RTG message via Bot: {e}, falling back to MTProto client")
+                        await cls._safe_mtproto_action(
+                            client.send_message,
+                            chat_id=main_channel,
+                            text=post_text,
+                            parse_mode=ParseMode.MARKDOWN
+                        )
             
             return True
             
